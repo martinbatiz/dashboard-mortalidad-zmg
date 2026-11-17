@@ -17,7 +17,7 @@ st.set_page_config(
 
 col_titulo, col_logo = st.columns([3.8, 1.2])
 with col_titulo:
-    st.title("🚨 Mapa de Siniestralidad Vial.Motocicletas en la ZMG (2026). CEPAJ")
+    st.title("🚨 Mapa de Siniestralidad Vial. Motocicletas en la ZMG (2026). CEPAJ")
     st.markdown("Análisis geoespacial, estadístico y de corredores estratégicos de siniestros viales en el Área Metropolitana de Guadalajara. BD")
 
 with col_logo:
