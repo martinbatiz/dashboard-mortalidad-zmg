@@ -17,8 +17,8 @@ st.set_page_config(
 
 col_titulo, col_logo = st.columns([3.8, 1.2])
 with col_titulo:
-    st.title("🚨 Mapa de Siniestralidad Vial. Motocicletas en la ZMG (2026). CEPAJ")
-    st.markdown("Análisis geoespacial, estadístico y de corredores estratégicos de siniestros viales en el Área Metropolitana de Guadalajara. BD")
+    st.title("🚨 Dashboard de Mortalidad por Siniestros Viales en Motocicletas en la ZMG (2026). CEPAJ")
+    st.markdown("Análisis geoespacial, estadístico y de corredores estratégicos de siniestros viales en el Área Metropolitana de Guadalajara. BJ")
 
 with col_logo:
     st.markdown("<div style='padding-top: 12px;'></div>", unsafe_allow_html=True)
@@ -108,20 +108,39 @@ def obtener_limites_municipales_zmg():
         return {"type": "FeatureCollection", "features": features_zmg}
     return None
 
-# Función para extraer coordenadas en formato Grados, Minutos, Segundos (DMS) o Decimales
+# Función mejorada para extraer coordenadas en DMS (Grados, Minutos, Segundos) o Grados Decimales (20.6597, -103.3496)
 def extraer_coordenadas(row):
     n_str = str(row['N']).strip() if pd.notnull(row['N']) and str(row['N']).strip().lower() != 'nan' else ''
     w_str = str(row['W']).strip() if pd.notnull(row['W']) and str(row['W']).strip().lower() != 'nan' else ''
-    combined = n_str + " " + w_str
-    
-    lat_match = re.search(r"(\d+)°\s*(\d+)['′\s]*([\d\.]+)\"?\s*N?", combined)
-    lon_match = re.search(r"(10[23])°\s*(\d+)['′\s]*([\d\.]+)\"?\s*W?", combined)
+    combined = (n_str + " " + w_str).replace(',', '.')
     
     lat, lon = None, None
-    if lat_match:
-        lat = float(lat_match.group(1)) + float(lat_match.group(2))/60.0 + float(lat_match.group(3))/3600.0
-    if lon_match:
-        lon = -(float(lon_match.group(1)) + float(lon_match.group(2))/60.0 + float(lon_match.group(3))/3600.0)
+    
+    # 1. Intentar formato Grados, Minutos, Segundos (DMS): ej. 20°40'32.5"N  103°20'15.1"W
+    lat_dms = re.search(r"(\d{1,2})\s*[°º]\s*(\d{1,2})\s*['′’]\s*([\d\.]+)\s*[\"″”]?\s*N?", combined, re.IGNORECASE)
+    lon_dms = re.search(r"(10[234])\s*[°º]\s*(\d{1,2})\s*['′’]\s*([\d\.]+)\s*[\"″”]?\s*W?", combined, re.IGNORECASE)
+    
+    if lat_dms:
+        lat = float(lat_dms.group(1)) + float(lat_dms.group(2))/60.0 + float(lat_dms.group(3))/3600.0
+    if lon_dms:
+        lon = -(float(lon_dms.group(1)) + float(lon_dms.group(2))/60.0 + float(lon_dms.group(3))/3600.0)
+    
+    # 2. Si no viene en DMS, intentar Grados Decimales directos (ej. 20.6754 y -103.3452 o 103.3452)
+    if lat is None:
+        lat_dec = re.search(r"\b(20\.\d+|21\.\d+)\b", combined)
+        if lat_dec:
+            lat = float(lat_dec.group(1))
+    if lon is None:
+        lon_dec = re.search(r"(-?10[234]\.\d+)", combined)
+        if lon_dec:
+            val = float(lon_dec.group(1))
+            lon = val if val < 0 else -val
+            
+    # Validar que las coordenadas caigan dentro del rango geográfico de Jalisco / ZMG
+    if lat is not None and not (19.5 <= lat <= 22.0):
+        lat = None
+    if lon is not None and not (-105.0 <= lon <= -102.0):
+        lon = None
         
     return pd.Series({'latitud': lat, 'longitud': lon})
 
@@ -314,7 +333,19 @@ try:
     circ_lista = sorted([str(c) for c in df['Circunstancia'].unique() if pd.notna(c)])
     circ_sel = st.sidebar.selectbox("Circunstancia del Siniestro:", ['Todas'] + circ_lista)
 
-    mostrar_limites = st.sidebar.checkbox("🗺️ Mostrar división política municipal", value=True)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🗺️ Opciones del Mapa")
+    estilo_mapa = st.sidebar.selectbox(
+        "Mapa Base / Cartografía:",
+        [
+            "Google Maps (Calles y Colonias)",
+            "Google Híbrido (Satélite + Calles)",
+            "Esri Satélite (Vista Aérea HD)",
+            "OpenStreetMap (Detallado)",
+            "CartoDB Positron (Claro)"
+        ]
+    )
+    mostrar_limites = st.sidebar.checkbox("Mostrar división política municipal", value=True)
 
     df_fil = df.copy()
     if mun_sel != 'Todos':
@@ -359,7 +390,34 @@ try:
         center_lat = float(con_coords['latitud'].mean()) if not con_coords.empty else 20.6597
         center_lon = float(con_coords['longitud'].mean()) if not con_coords.empty else -103.3496
         
-        mapa = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="OpenStreetMap")
+        mapa = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles=None)
+
+        # Selección de mapa base de alta precisión (Google Maps / Satélite / OSM / CartoDB)
+        if estilo_mapa == "Google Maps (Calles y Colonias)":
+            folium.TileLayer(
+                tiles="https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}",
+                attr="Google Maps",
+                name="Google Maps",
+                max_zoom=21
+            ).add_to(mapa)
+        elif estilo_mapa == "Google Híbrido (Satélite + Calles)":
+            folium.TileLayer(
+                tiles="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+                attr="Google Hybrid",
+                name="Google Híbrido",
+                max_zoom=21
+            ).add_to(mapa)
+        elif estilo_mapa == "Esri Satélite (Vista Aérea HD)":
+            folium.TileLayer(
+                tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                attr="Esri World Imagery",
+                name="Esri Satélite",
+                max_zoom=19
+            ).add_to(mapa)
+        elif estilo_mapa == "CartoDB Positron (Claro)":
+            folium.TileLayer("CartoDB positron", name="CartoDB Positron", max_zoom=20).add_to(mapa)
+        else:
+            folium.TileLayer("OpenStreetMap", name="OpenStreetMap", max_zoom=19).add_to(mapa)
 
         # Capa de límites políticos municipales de la ZMG
         geojson_zmg = obtener_limites_municipales_zmg() if mostrar_limites else None
@@ -391,16 +449,16 @@ try:
                 return {
                     "fillColor": color_borde,
                     "color": color_borde,
-                    "weight": 4.5 if es_seleccionado else 3.2,
+                    "weight": 4.5 if es_seleccionado else 3.0,
                     "dashArray": None if es_seleccionado else "8, 5",
-                    "fillOpacity": 0.16 if es_seleccionado else 0.05
+                    "fillOpacity": 0.14 if es_seleccionado else 0.03
                 }
 
             folium.GeoJson(
                 geojson_zmg,
                 name="División Política Municipal (ZMG)",
                 style_function=estilo_municipio,
-                highlight_function=lambda x: {"weight": 5, "fillOpacity": 0.22},
+                highlight_function=lambda x: {"weight": 5, "fillOpacity": 0.20},
                 tooltip=folium.GeoJsonTooltip(
                     fields=["MUNICIPIO_ETIQUETA"],
                     aliases=["Municipio:"],
@@ -408,37 +466,43 @@ try:
                 )
             ).add_to(mapa)
 
-        # Capa de puntos críticos de siniestros
+        # Capa de puntos críticos de siniestros con enlace directo a Google Maps Street View / Ubicación exacta
         capa_puntos = folium.FeatureGroup(name="Puntos de Siniestros Mortales")
         for (lat_val, lon_val), grupo in con_coords.groupby(['latitud', 'longitud']):
             cant = len(grupo)
-            radio = 6 + (cant - 1) * 3.5
-            color_punto = "#b30000" if cant > 1 else "#d9534f"
+            radio = 6.5 + (cant - 1) * 3.5
+            color_punto = "#b30000" if cant > 1 else "#e11d48"
             
             detalles_html = ""
             for _, r in grupo.iterrows():
                 detalles_html += f"<li style='margin-bottom:4px;'><b>{r['Fecha_Texto']}</b>: {r['Circunstancia']} | {r['Rol']} ({r['Sexo_Clean']}, {r['Edad_Display']} años)</li>"
             
+            gmaps_url = f"https://www.google.com/maps/search/?api=1&query={lat_val:.6f},{lon_val:.6f}"
+            
             popup_txt = f"""
-            <div style="font-family: Arial, sans-serif; width: 270px;">
+            <div style="font-family: Arial, sans-serif; width: 280px;">
                 <b>Cruce:</b> {grupo.iloc[0]['Crucero']}<br>
                 <b>Municipio:</b> {grupo.iloc[0]['Municipio']}<br>
                 <b>Corredor:</b> {grupo.iloc[0]['Corredor']}<br>
-                <b>Total Fallecidos en este punto:</b> {cant}
-                <hr style="margin:5px 0;">
+                <b>Coordenadas:</b> {lat_val:.6f}, {lon_val:.6f}<br>
+                <b>Total Fallecidos en este punto:</b> {cant}<br>
+                <a href="{gmaps_url}" target="_blank" style="display:inline-block; margin-top:5px; padding:4px 8px; background:#1a73e8; color:white; text-decoration:none; border-radius:4px; font-size:12px;">
+                    📍 Abrir punto exacto en Google Maps
+                </a>
+                <hr style="margin:6px 0;">
                 <ul style="padding-left:16px; margin:0;">{detalles_html}</ul>
             </div>
             """
             folium.CircleMarker(
                 location=[float(lat_val), float(lon_val)],
                 radius=radio,
-                popup=folium.Popup(popup_txt, max_width=300),
+                popup=folium.Popup(popup_txt, max_width=310),
                 tooltip=f"{grupo.iloc[0]['Crucero']} ({grupo.iloc[0]['Municipio']}) - {cant} fallecido(s)",
-                color=color_punto,
+                color="#ffffff",
                 fill=True,
                 fill_color=color_punto,
-                fill_opacity=0.85,
-                weight=2
+                fill_opacity=0.9,
+                weight=1.5
             ).add_to(capa_puntos)
 
         capa_puntos.add_to(mapa)
